@@ -91,6 +91,7 @@ type ToolCallLine = {
   unifiedExecCommandDisplay?: string;
   resultText?: string;
   resultOk?: boolean;
+  permissionExplanation?: string;
   phase: "streaming" | "ready" | "running" | "finished";
   streaming?: StreamingState;
 };
@@ -910,6 +911,12 @@ export const ToolCallMessage = memo(
             isStreaming={isStreaming}
             isMemory={isMemoryTool(rawName)}
           />
+
+          {line.permissionExplanation && (
+            <Box marginLeft={5}>
+              <Text dimColor>{line.permissionExplanation}</Text>
+            </Box>
+          )}
 
           {/* Shell command continuation lines with │ prefix */}
           {shellContinuationLines.map((spans) => {

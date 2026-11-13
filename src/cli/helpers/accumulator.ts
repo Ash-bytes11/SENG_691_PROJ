@@ -177,6 +177,7 @@ export type Line =
       // from the tool return object
       resultText?: string;
       resultOk?: boolean;
+      permissionExplanation?: string;
       // state that's useful for rendering
       phase: "streaming" | "ready" | "running" | "finished";
       // streaming output state (for shell tools during execution)
@@ -1515,10 +1516,7 @@ export function findLastAssistantText(lines: Line[]): string | undefined {
   return undefined;
 }
 
-/**
- * Set tool calls to "running" phase before execution.
- * This updates the UI to show the formatted args instead of ellipsis.
- */
+/** Set tool calls to "running" and show their formatted arguments. */
 export function setToolCallsRunning(b: Buffers, toolCallIds: string[]): void {
   for (const toolCallId of toolCallIds) {
     const lineId = b.toolCallIdToLineId.get(toolCallId);

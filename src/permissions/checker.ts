@@ -24,6 +24,7 @@ import {
 } from "./canonical";
 import { cliPermissions } from "./cli-permissions-instance";
 import { evaluateCrossAgentGuard, extractFilePath } from "./cross-agent-guard";
+import { recordPermissionDecision } from "./explanation";
 import {
   type MatcherOptions,
   matchesBashPattern,
@@ -124,6 +125,7 @@ export function checkPermission(
   modeState?: PermissionModeState,
   agentId?: string,
   modTools: Map<string, ModToolDefinition> = getAvailableModToolsRegistry(),
+  forceTrace = false,
 ): PermissionCheckResult {
   const engine: PermissionEngine = isPermissionsV2Enabled() ? "v2" : "v1";
   const primary = checkPermissionForEngine(
@@ -138,22 +140,25 @@ export function checkPermission(
   );
 
   let result: PermissionCheckResult = primary.result;
-  const includeTrace = shouldAttachTrace(primary.result);
+  const shouldLogTrace = shouldAttachTrace(primary.result);
+  const includeTrace = forceTrace || shouldLogTrace;
   if (includeTrace) {
     result = {
       ...result,
       trace: primary.trace,
     };
-    console.error(
-      `[permissions] trace ${JSON.stringify({
-        toolName,
-        engine,
-        decision: primary.result.decision,
-        matchedRule: primary.result.matchedRule,
-        query: primary.trace.query,
-        events: primary.trace.events,
-      })}`,
-    );
+    if (shouldLogTrace) {
+      console.error(
+        `[permissions] trace ${JSON.stringify({
+          toolName,
+          engine,
+          decision: primary.result.decision,
+          matchedRule: primary.result.matchedRule,
+          query: primary.trace.query,
+          events: primary.trace.events,
+        })}`,
+      );
+    }
   }
 
   if (envFlagEnabled("LETTA_PERMISSIONS_DUAL_EVAL")) {
@@ -833,6 +838,7 @@ export async function checkPermissionWithHooks(
     modeState,
     agentId,
     modTools,
+    true,
   );
 
   if (result.decision !== "deny") {
@@ -857,6 +863,7 @@ export async function checkPermissionWithHooks(
           decision: modDecision.decision,
           matchedRule: modDecision.matchedRule,
           reason: modDecision.reason ?? `Matched ${modDecision.matchedRule}`,
+          trace: result.trace,
         };
       }
     }
@@ -876,10 +883,11 @@ export async function checkPermissionWithHooks(
     // If hook blocked (exit code 2), deny the permission
     if (hookResult.blocked) {
       const feedback = hookResult.feedback.join("\n") || "Denied by hook";
-      return {
+      result = {
         decision: "deny",
         matchedRule: "PermissionRequest hook",
         reason: feedback,
+        trace: result.trace,
       };
     }
 
@@ -888,14 +896,24 @@ export async function checkPermissionWithHooks(
     const anyHookAllowed = hookResult.results.some(
       (r) => r.exitCode === 0 && !r.timedOut && !r.error,
     );
-    if (anyHookAllowed) {
-      return {
+    if (!hookResult.blocked && anyHookAllowed) {
+      result = {
         decision: "allow",
         matchedRule: "PermissionRequest hook",
         reason: "Allowed by hook",
+        trace: result.trace,
       };
     }
   }
 
+  if (result.trace) {
+    result.trace.events.push({
+      stage: "final-decision",
+      matched: true,
+      pattern: result.matchedRule,
+      message: result.reason,
+    });
+  }
+  recordPermissionDecision(result);
   return result;
 }

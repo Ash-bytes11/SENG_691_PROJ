@@ -39,7 +39,7 @@ import type {
   ModToolStartEvent,
 } from "@/mods/types";
 import type {
-  PermissionDecision,
+  PermissionCheckResult,
   PermissionRuleType,
 } from "@/permissions/types";
 import { OPENAI_CODEX_PROVIDER_NAME } from "@/providers/openai-codex-provider";
@@ -1006,11 +1006,7 @@ export async function checkToolPermission(
   agentIdArg?: string,
   toolContextIdArg?: string | null,
   toolCallIdArg?: string | null,
-): Promise<{
-  decision: PermissionDecision;
-  matchedRule?: string;
-  reason?: string;
-}> {
+): Promise<PermissionCheckResult> {
   const { checkPermissionWithHooks } = await import("@/permissions/checker");
   const { loadPermissions } = await import("@/permissions/loader");
 

@@ -7,6 +7,7 @@ import {
   type LocalTranscriptSearchBody,
   searchLocalTranscriptMessages,
 } from "./local/transcript-search";
+import { indexedConversationMessages } from "./local/transcript-search-index";
 
 type SearchMode = "vector" | "fts" | "hybrid";
 
@@ -21,16 +22,19 @@ export async function searchMessagesForBackend<T = MessageSearchResponse>(
   backend: Backend = getBackend(),
 ): Promise<T> {
   if (backend.capabilities.localModelCatalog) {
-    return searchLocalTranscriptMessages(
-      localStorageDirForBackend(backend),
-      body,
-      {
-        currentConversationId:
-          getRuntimeContext()?.conversationId ??
-          process.env.LETTA_CONVERSATION_ID ??
-          process.env.CONVERSATION_ID,
-      },
-    ) as T;
+    const storageDir = localStorageDirForBackend(backend);
+    const currentConversationId =
+      getRuntimeContext()?.conversationId ??
+      process.env.LETTA_CONVERSATION_ID ??
+      process.env.CONVERSATION_ID;
+    const options = { currentConversationId };
+    const indexed = { ...options, collect: indexedConversationMessages };
+    try {
+      return searchLocalTranscriptMessages(storageDir, body, indexed) as T;
+    } catch {
+      // Reading the transcripts directly is the fallback if the index fails.
+      return searchLocalTranscriptMessages(storageDir, body, options) as T;
+    }
   }
 
   return searchMessages<T>({

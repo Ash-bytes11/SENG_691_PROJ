@@ -333,6 +333,7 @@ test("Deny rule overrides working directory auto-allow", () => {
 
   expect(result.decision).toBe("deny");
   expect(result.matchedRule).toBe("Read(.env)");
+  expect(result.reason).toBe("Matched deny rule");
 });
 
 test("Deny pattern blocks multiple files", () => {
@@ -396,6 +397,7 @@ test("Allow rule for file outside working directory", () => {
 
   expect(result.decision).toBe("allow");
   expect(result.matchedRule).toBe("Read(/Users/test/docs/**)");
+  expect(result.reason).toBe("Matched allow rule");
 });
 
 test("Allow rule for Bash command", () => {
@@ -414,6 +416,7 @@ test("Allow rule for Bash command", () => {
 
   expect(result.decision).toBe("allow");
   expect(result.matchedRule).toBe("Bash(npm run:*)");
+  expect(result.reason).toBe("Matched allow rule");
 });
 
 test("Allow exact Bash command", () => {
@@ -507,6 +510,7 @@ test("Ask rule forces prompt", () => {
 
   expect(result.decision).toBe("ask");
   expect(result.matchedRule).toBe("Bash(git push:*)");
+  expect(result.reason).toBe("Matched ask rule");
 });
 
 test("Ask rule for specific file pattern", () => {

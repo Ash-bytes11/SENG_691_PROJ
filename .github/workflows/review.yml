@@ -48,7 +48,7 @@ jobs:
           echo "Eyes reaction ID: $REACTION_ID"
           echo "reaction_id=$REACTION_ID" >> $GITHUB_OUTPUT
         env:
-          GH_TOKEN: ${{ secrets.AMELIA_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
 
       - uses: letta-ai/letta-code-action@244cc9e80c77cfebdb3ec8e146e018a5fe0af027
         id: letta_review
@@ -232,7 +232,7 @@ jobs:
             echo "Comments left — keeping eyes reaction"
           fi
         env:
-          GH_TOKEN: ${{ secrets.AMELIA_GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
 
       - name: Load expert review prompt
         id: expert_review_prompt

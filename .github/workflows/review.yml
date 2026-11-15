@@ -56,7 +56,7 @@ jobs:
           AMELIA_GITHUB_TOKEN: ${{ secrets.AMELIA_GITHUB_TOKEN }}
         with:
           letta_api_key: ${{ secrets.AMELIA_LETTA_API_KEY }}
-          github_token: ${{ secrets.AMELIA_GITHUB_TOKEN }}
+          github_token: ${{ github.token }}
           agent_id: agent-cd664b86-4d28-49b7-8ad6-60677eaff9be
           # Review the CI checkout. Existing Cloud delivery rejects local
           # execution options such as the action's --yolo and model flags.

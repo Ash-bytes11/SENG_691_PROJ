@@ -6,6 +6,10 @@ import type {
   TextContent,
 } from "@letta-ai/letta-client/resources/agents/messages";
 import {
+  type CompactionStatsWire,
+  toCompactionEventStats,
+} from "@/cli/helpers/compaction-stats-display";
+import {
   SYSTEM_ALERT_CLOSE,
   SYSTEM_ALERT_OPEN,
   SYSTEM_REMINDER_CLOSE,
@@ -390,14 +394,7 @@ export function backfillBuffers(buffers: Buffers, history: Message[]): void {
           // SummaryMessage has: summary (str), compaction_stats (optional)
           const summaryMsg = msg as Message & {
             summary?: string;
-            compaction_stats?: {
-              trigger?: string;
-              context_tokens_before?: number;
-              context_tokens_after?: number;
-              context_window?: number;
-              messages_count_before?: number;
-              messages_count_after?: number;
-            };
+            compaction_stats?: CompactionStatsWire;
           };
 
           const summaryText = summaryMsg.summary || "";
@@ -412,14 +409,7 @@ export function backfillBuffers(buffers: Buffers, history: Message[]): void {
               line.phase = "finished";
               line.summary = summaryText;
               if (stats) {
-                line.stats = {
-                  trigger: stats.trigger,
-                  contextTokensBefore: stats.context_tokens_before,
-                  contextTokensAfter: stats.context_tokens_after,
-                  contextWindow: stats.context_window,
-                  messagesCountBefore: stats.messages_count_before,
-                  messagesCountAfter: stats.messages_count_after,
-                };
+                line.stats = toCompactionEventStats(stats);
               }
               break;
             }

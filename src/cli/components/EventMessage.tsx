@@ -1,5 +1,9 @@
 import { Box } from "ink";
 import { memo } from "react";
+import {
+  type CompactionEventStats,
+  formatCompactionStatsLine,
+} from "@/cli/helpers/compaction-stats-display";
 import { CLI_GLYPHS } from "@/cli/helpers/glyphs";
 import { useTerminalWidth } from "@/cli/hooks/use-terminal-width";
 import { COMPACTION_SUMMARY_HEADER } from "@/constants";
@@ -15,14 +19,7 @@ type EventLine = {
   eventData: Record<string, unknown>;
   phase: "running" | "finished";
   summary?: string;
-  stats?: {
-    trigger?: string;
-    contextTokensBefore?: number;
-    contextTokensAfter?: number;
-    contextWindow?: number;
-    messagesCountBefore?: number;
-    messagesCountAfter?: number;
-  };
+  stats?: CompactionEventStats;
 };
 
 /**
@@ -64,6 +61,7 @@ export const EventMessage = memo(({ line }: { line: EventLine }) => {
   }
 
   const isRunning = line.phase === "running";
+  const statsLine = formatCompactionStatsLine(line.stats);
 
   // Dot indicator based on phase
   const dotElement = isRunning ? (
@@ -87,6 +85,20 @@ export const EventMessage = memo(({ line }: { line: EventLine }) => {
           )}
         </Box>
       </Box>
+
+      {/* Before and after token estimates, trigger, and facts kept */}
+      {!isRunning && statsLine && (
+        <Box flexDirection="row">
+          <Box width={5} flexShrink={0}>
+            <Text dimColor>{`  ${CLI_GLYPHS.result}  `}</Text>
+          </Box>
+          <Box flexGrow={1} width={Math.max(0, rightWidth - 3)}>
+            <Text dimColor wrap="wrap">
+              {statsLine}
+            </Text>
+          </Box>
+        </Box>
+      )}
 
       {/* Result section (only when finished and LETTA_DEBUG is enabled) */}
       {/* By default, hide the verbose summary to avoid overwhelming users */}

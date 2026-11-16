@@ -38,6 +38,10 @@ export interface LocalMessageMetadata {
       context_window?: number;
       messages_count_before?: number;
       messages_count_after?: number;
+      summary_word_limit?: number;
+      tool_return_truncation_chars?: number;
+      facts_preserved?: Record<string, number>;
+      budget_reason?: string;
     };
   };
 }

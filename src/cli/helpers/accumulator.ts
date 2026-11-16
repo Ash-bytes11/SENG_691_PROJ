@@ -5,6 +5,11 @@
 // - Exposes `onChunk` to feed SDK events and `toLines` to render.
 
 import type { LettaStreamingResponse } from "@letta-ai/letta-client/resources/agents/messages";
+import {
+  type CompactionEventStats,
+  type CompactionStatsWire,
+  toCompactionEventStats,
+} from "@/cli/helpers/compaction-stats-display";
 import { INTERRUPTED_BY_USER } from "@/constants";
 import {
   runPostToolUseHooks,
@@ -27,14 +32,7 @@ type CompactionSummaryMessageChunk = {
   id?: string;
   otid?: string;
   summary?: string;
-  compaction_stats?: {
-    trigger?: string;
-    context_tokens_before?: number;
-    context_tokens_after?: number;
-    context_window?: number;
-    messages_count_before?: number;
-    messages_count_after?: number;
-  };
+  compaction_stats?: CompactionStatsWire;
 };
 
 type CompactionEventMessageChunk = {
@@ -192,14 +190,7 @@ export type Line =
       // Compaction events have additional fields populated when summary_message arrives
       phase: "running" | "finished";
       summary?: string;
-      stats?: {
-        trigger?: string;
-        contextTokensBefore?: number;
-        contextTokensAfter?: number;
-        contextWindow?: number;
-        messagesCountBefore?: number;
-        messagesCountAfter?: number;
-      };
+      stats?: CompactionEventStats;
     }
   | {
       kind: "command";
@@ -1388,14 +1379,7 @@ export function onChunk(
           id?: string;
           otid?: string;
           summary?: string;
-          compaction_stats?: {
-            trigger?: string;
-            context_tokens_before?: number;
-            context_tokens_after?: number;
-            context_window?: number;
-            messages_count_before?: number;
-            messages_count_after?: number;
-          };
+          compaction_stats?: CompactionStatsWire;
         };
         const summaryText = summaryChunk.summary || "";
         const stats = summaryChunk.compaction_stats;
@@ -1409,14 +1393,7 @@ export function onChunk(
             line.phase = "finished";
             line.summary = summaryText;
             if (stats) {
-              line.stats = {
-                trigger: stats.trigger,
-                contextTokensBefore: stats.context_tokens_before,
-                contextTokensAfter: stats.context_tokens_after,
-                contextWindow: stats.context_window,
-                messagesCountBefore: stats.messages_count_before,
-                messagesCountAfter: stats.messages_count_after,
-              };
+              line.stats = toCompactionEventStats(stats);
             }
             break;
           }

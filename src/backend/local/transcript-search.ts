@@ -25,7 +25,7 @@ export type LocalTranscriptSearchBody = {
   include_hidden?: unknown;
 };
 
-type LocalConversationSearchRecord = {
+export type LocalConversationSearchRecord = {
   id: string;
   agent_id: string;
   hidden?: boolean;
@@ -41,19 +41,30 @@ type TranscriptMessageRow = {
   sourceIndex: number;
 };
 
-type SearchableStoredMessage = {
+export type SearchableStoredMessage = {
   message: StoredMessage;
   normalizedText: string;
   tokens: string[];
   score: number;
   isSearchEcho: boolean;
+  resolve?: () => StoredMessage;
+};
+
+export type ConversationMessagesInput = {
+  conversationDir: string;
+  conversation: LocalConversationSearchRecord;
+  agentId?: string;
+  conversationId?: string;
+  startDate?: string;
+  endDate?: string;
 };
 
 type LocalTranscriptSearchOptions = {
   currentConversationId?: string;
+  collect?: (input: ConversationMessagesInput) => SearchableStoredMessage[];
 };
 
-function readJsonFile<T>(path: string): T | undefined {
+export function readJsonFile<T>(path: string): T | undefined {
   if (!existsSync(path)) return undefined;
   try {
     return JSON.parse(readFileSync(path, "utf8")) as T;
@@ -74,7 +85,7 @@ function readJsonlFile(path: string): unknown[] {
   }
 }
 
-function conversationSearchRecord(
+export function conversationSearchRecord(
   value: unknown,
 ): LocalConversationSearchRecord | undefined {
   if (!isRecord(value)) return undefined;
@@ -98,7 +109,7 @@ function isLocalMessage(value: unknown): value is LocalMessage {
   );
 }
 
-function transcriptFormat(
+export function transcriptFormat(
   manifest: LocalTranscriptManifest | undefined,
   rows: readonly unknown[],
 ): LocalTranscriptMessageFormat | undefined {
@@ -124,36 +135,37 @@ function transcriptFormat(
   return undefined;
 }
 
+export function transcriptMessageRow(
+  row: unknown,
+  sourceIndex: number,
+  format: LocalTranscriptMessageFormat,
+): TranscriptMessageRow | undefined {
+  if (format === LOCAL_TRANSCRIPT_LEGACY_MESSAGE_FORMAT) {
+    if (!isLocalMessage(row)) {
+      return undefined;
+    }
+    return { timestamp: row.metadata?.created_at, message: row, sourceIndex };
+  }
+  const isEntry = isRecord(row);
+  const isMessageEntry =
+    isEntry && (row.type === "message" || row.type === "compaction");
+  if (!isMessageEntry || !isLocalMessage(row.message)) {
+    return undefined;
+  }
+  return {
+    timestamp: typeof row.timestamp === "string" ? row.timestamp : undefined,
+    message: row.message,
+    sourceIndex,
+  };
+}
+
 function transcriptMessageRows(
   rows: readonly unknown[],
   format: LocalTranscriptMessageFormat,
 ): TranscriptMessageRow[] {
-  if (format === LOCAL_TRANSCRIPT_LEGACY_MESSAGE_FORMAT) {
-    return rows
-      .map((row, sourceIndex) => ({ row, sourceIndex }))
-      .filter((item): item is { row: LocalMessage; sourceIndex: number } =>
-        isLocalMessage(item.row),
-      )
-      .map(({ row, sourceIndex }) => ({
-        timestamp: row.metadata?.created_at,
-        message: row,
-        sourceIndex,
-      }));
-  }
-
-  const messageRows: TranscriptMessageRow[] = [];
-  rows.forEach((row, sourceIndex) => {
-    if (!isRecord(row)) return;
-    if (row.type !== "message" && row.type !== "compaction") return;
-    const message = row.message;
-    if (!isLocalMessage(message)) return;
-    messageRows.push({
-      timestamp: typeof row.timestamp === "string" ? row.timestamp : undefined,
-      message,
-      sourceIndex,
-    });
-  });
-  return messageRows;
+  return rows
+    .map((row, sourceIndex) => transcriptMessageRow(row, sourceIndex, format))
+    .filter((row): row is TranscriptMessageRow => row !== undefined);
 }
 
 function textFromContent(content: unknown): string {
@@ -185,7 +197,7 @@ function stringifySearchValue(value: unknown): string {
   }
 }
 
-function searchableText(message: StoredMessage): string {
+export function searchableText(message: StoredMessage): string {
   const localMessage = message as StoredMessage & {
     message_type?: string;
     content?: unknown;
@@ -251,7 +263,7 @@ function tokenize(value: string): string[] {
   });
 }
 
-function normalizeText(value: string): string {
+export function normalizeText(value: string): string {
   return tokenize(value).join(" ");
 }
 
@@ -369,7 +381,7 @@ function rankMatches(
   });
 }
 
-function dateInRange(
+export function dateInRange(
   createdAt: string | undefined,
   startDate: string | undefined,
   endDate: string | undefined,
@@ -407,7 +419,7 @@ function toSearchResult(message: StoredMessage): MessageSearchResponse[number] {
   } as MessageSearchResponse[number];
 }
 
-function projectedTranscriptMessages(input: {
+export function projectedTranscriptMessages(input: {
   row: TranscriptMessageRow;
   agentId: string;
   conversationId: string;
@@ -425,14 +437,41 @@ function projectedTranscriptMessages(input: {
   return withProjectedMessageDates(projected, input.row.sourceIndex);
 }
 
-function collectConversationMessages(input: {
-  conversationDir: string;
-  conversation: LocalConversationSearchRecord;
-  agentId?: string;
-  conversationId?: string;
-  startDate?: string;
-  endDate?: string;
-}): SearchableStoredMessage[] {
+type ToolCallFields = StoredMessage & {
+  message_type?: string;
+  tool_call?: { tool_call_id?: string; name?: string; arguments?: string };
+  tool_call_id?: string;
+};
+
+export function searchToolCallId(message: StoredMessage): string | undefined {
+  const candidate = message as ToolCallFields;
+  const isRequest = candidate.message_type === "approval_request_message";
+  const name = candidate.tool_call?.name;
+  const isShellTool = name === "Bash" || name === "exec_command";
+  const args = candidate.tool_call?.arguments;
+  const runsSearch =
+    typeof args === "string" && /\bmessages\s+search\b/i.test(args);
+  if (!isRequest || !isShellTool || !runsSearch) {
+    return undefined;
+  }
+  const id = candidate.tool_call?.tool_call_id;
+  return typeof id === "string" ? id : undefined;
+}
+
+export function searchEchoKey(message: StoredMessage): string | undefined {
+  const candidate = message as ToolCallFields;
+  if (candidate.message_type === "approval_request_message") {
+    return candidate.tool_call?.tool_call_id ?? "";
+  }
+  if (candidate.message_type === "tool_return_message") {
+    return candidate.tool_call_id ?? "";
+  }
+  return undefined;
+}
+
+function collectConversationMessages(
+  input: ConversationMessagesInput,
+): SearchableStoredMessage[] {
   const { conversation, conversationDir } = input;
   if (input.agentId && conversation.agent_id !== input.agentId) return [];
   if (input.conversationId && conversation.id !== input.conversationId)
@@ -456,30 +495,8 @@ function collectConversationMessages(input: {
   );
   const searchToolCallIds = new Set(
     messages
-      .filter((message) => {
-        const candidate = message as StoredMessage & {
-          message_type?: string;
-          tool_call?: {
-            tool_call_id?: string;
-            name?: string;
-            arguments?: string;
-          };
-        };
-        return (
-          candidate.message_type === "approval_request_message" &&
-          (candidate.tool_call?.name === "Bash" ||
-            candidate.tool_call?.name === "exec_command") &&
-          typeof candidate.tool_call.arguments === "string" &&
-          /\bmessages\s+search\b/i.test(candidate.tool_call.arguments)
-        );
-      })
-      .map((message) => {
-        const candidate = message as StoredMessage & {
-          tool_call?: { tool_call_id?: string };
-        };
-        return candidate.tool_call?.tool_call_id;
-      })
-      .filter((id): id is string => typeof id === "string"),
+      .map(searchToolCallId)
+      .filter((id): id is string => id !== undefined),
   );
 
   return messages
@@ -487,28 +504,20 @@ function collectConversationMessages(input: {
       dateInRange(message.date, input.startDate, input.endDate),
     )
     .map((message) => {
-      const candidate = message as StoredMessage & {
-        message_type?: string;
-        tool_call?: { tool_call_id?: string };
-        tool_call_id?: string;
-      };
       const text = searchableText(message);
+      const echoKey = searchEchoKey(message);
       return {
         message,
         normalizedText: normalizeText(text),
         tokens: tokenize(text),
         score: 0,
-        isSearchEcho:
-          (candidate.message_type === "approval_request_message" &&
-            searchToolCallIds.has(candidate.tool_call?.tool_call_id ?? "")) ||
-          (candidate.message_type === "tool_return_message" &&
-            searchToolCallIds.has(candidate.tool_call_id ?? "")),
+        isSearchEcho: echoKey !== undefined && searchToolCallIds.has(echoKey),
       };
     })
     .filter((record) => record.tokens.length > 0);
 }
 
-function conversationDirectories(storageDir: string): string[] {
+export function conversationDirectories(storageDir: string): string[] {
   const conversationsDir = join(storageDir, "conversations");
   if (!existsSync(conversationsDir)) return [];
   try {
@@ -548,6 +557,7 @@ export function searchLocalTranscriptMessages(
     typeof body.start_date === "string" ? body.start_date : undefined;
   const endDate = typeof body.end_date === "string" ? body.end_date : undefined;
   const includeHidden = body.include_hidden === true;
+  const collect = options.collect ?? collectConversationMessages;
 
   const records = conversationDirectories(storageDir).flatMap(
     (conversationDir) => {
@@ -556,7 +566,7 @@ export function searchLocalTranscriptMessages(
       );
       if (!conversation) return [];
       if (conversation.hidden && !includeHidden) return [];
-      return collectConversationMessages({
+      return collect({
         conversationDir,
         conversation,
         agentId,
@@ -588,5 +598,5 @@ export function searchLocalTranscriptMessages(
       return b.message.date.localeCompare(a.message.date);
     })
     .slice(0, limit)
-    .map((record) => toSearchResult(record.message));
+    .map((record) => toSearchResult(record.resolve?.() ?? record.message));
 }

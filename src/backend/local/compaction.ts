@@ -15,6 +15,14 @@ import { LocalPiModelsRuntime } from "@/backend/dev/pi-models-runtime";
 import { resolvePiRequestHeaders } from "@/backend/dev/pi-request-headers";
 import { estimateLocalMessagesTokens } from "@/backend/local/local-context-estimate";
 import { isRecord } from "@/utils/type-guards";
+import {
+  appendCompactionFacts,
+  type CompactionFactCounts,
+  countCompactionFacts,
+  DEFAULT_FACTS_BLOCK_MAX_CHARS,
+  extractCompactionFacts,
+  parseCompactionFactsBlock,
+} from "./compaction-facts";
 import type { LocalMessage } from "./local-message";
 import { resolveAvailableLocalModelForTurn } from "./local-model-config";
 import type { LocalAgentRecord } from "./local-types";
@@ -58,7 +66,10 @@ export function isLocalSlidingWindowCompactionPlanningError(
   return error instanceof LocalSlidingWindowCompactionPlanningError;
 }
 
-export const LOCAL_ALL_COMPACTION_PROMPT = `Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions.
+export function buildLocalAllCompactionPrompt(
+  wordLimit: number = ALL_WORD_LIMIT,
+): string {
+  return `Your task is to create a detailed summary of the conversation so far, paying close attention to the user's explicit requests and your previous actions.
 This summary should be thorough in capturing technical details, code patterns, and architectural decisions that would be essential for continuing development work without losing context. Your summary should include the following sections:
 
 1.**High level goals**: What is the high level goal and ongoing task? Capture the user's explicit requests and intent in detail. If there is an existing summary in the transcript, make sure to take it into consideration to continue tracking the higher level goals and long-term progress.
@@ -80,9 +91,15 @@ This summary should be thorough in capturing technical details, code patterns, a
 
 Write in first person as a factual record of what occurred. Be concise but thorough - the goal is to preserve enough context that the recent messages make sense and important information isn't lost to prevent duplicate work or repeated mistakes.
 
-Keep your summary under ${ALL_WORD_LIMIT} words. Only output the summary.`;
+Keep your summary under ${wordLimit} words. Only output the summary.`;
+}
 
-export const LOCAL_SLIDING_WINDOW_COMPACTION_PROMPT = `The following messages are being evicted from the BEGINNING of your context window. Write a detailed summary that captures what happened in these messages to appear BEFORE the remaining recent messages in context, providing background for what comes after. Include the following sections:
+export const LOCAL_ALL_COMPACTION_PROMPT = buildLocalAllCompactionPrompt();
+
+export function buildLocalSlidingWindowCompactionPrompt(
+  wordLimit: number = SLIDING_WORD_LIMIT,
+): string {
+  return `The following messages are being evicted from the BEGINNING of your context window. Write a detailed summary that captures what happened in these messages to appear BEFORE the remaining recent messages in context, providing background for what comes after. Include the following sections:
 
 1.**High level goals**: What is the high level goal and ongoing task? Capture the user's explicit requests and intent in detail. If there is an existing summary in the transcript, make sure to take it into consideration to continue tracking the higher level goals and long-term progress.
 
@@ -99,7 +116,11 @@ export const LOCAL_SLIDING_WINDOW_COMPACTION_PROMPT = `The following messages ar
 
 Write in first person as a factual record of what occurred. Be thorough and detailed - the goal is to preserve enough context that the recent messages make sense and important information isn't lost to prevent duplicate work or repeated mistakes.
 
-Keep your summary under ${SLIDING_WORD_LIMIT} words. Only output the summary.`;
+Keep your summary under ${wordLimit} words. Only output the summary.`;
+}
+
+export const LOCAL_SLIDING_WINDOW_COMPACTION_PROMPT =
+  buildLocalSlidingWindowCompactionPrompt();
 
 export interface LocalCompactionStats {
   trigger?: string;
@@ -108,6 +129,113 @@ export interface LocalCompactionStats {
   context_window?: number;
   messages_count_before?: number;
   messages_count_after?: number;
+  summary_word_limit?: number;
+  tool_return_truncation_chars?: number;
+  facts_preserved?: CompactionFactCounts;
+  budget_reason?: string;
+}
+
+/**
+ * Adaptive compaction budget. The limits follow the selected model's context
+ * window; when the window is unknown every number falls back to the fixed
+ * value used before this enhancement.
+ */
+export interface LocalCompactionBudget {
+  /** False when the context window is unknown and fixed limits apply. */
+  adaptive: boolean;
+  summaryWordLimit: number;
+  toolReturnTruncationChars: number;
+  factsBlockMaxChars: number;
+  reason: string;
+}
+
+const SUMMARY_WORD_LIMIT_CAP = 3_000;
+const WORDS_PER_TOKEN = 0.75;
+const SUMMARY_WINDOW_SHARE = { all: 0.04, sliding_window: 0.02 } as const;
+const MIN_ADAPTIVE_TOOL_RETURN_CHARS = 600;
+const FACTS_BLOCK_SUMMARY_SHARE = 0.25;
+const CHARS_PER_WORD = 6;
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function formatTokenCount(tokens: number): string {
+  return tokens >= 1_000 ? `${Math.round(tokens / 1_000)}k` : `${tokens}`;
+}
+
+export function computeLocalCompactionBudget(input: {
+  contextWindow?: number;
+  contextTokensBefore?: number;
+  mode: LocalCompactionMode;
+}): LocalCompactionBudget {
+  const fixedWords =
+    input.mode === "sliding_window" ? SLIDING_WORD_LIMIT : ALL_WORD_LIMIT;
+  const window = input.contextWindow;
+  if (typeof window !== "number" || !Number.isFinite(window) || window <= 0) {
+    return {
+      adaptive: false,
+      summaryWordLimit: fixedWords,
+      toolReturnTruncationChars: LOCAL_SUMMARY_TOOL_RETURN_TRUNCATION_CHARS,
+      factsBlockMaxChars: DEFAULT_FACTS_BLOCK_MAX_CHARS,
+      reason: `Context window unknown: fixed limits (${fixedWords} word summary, ${LOCAL_SUMMARY_TOOL_RETURN_TRUNCATION_CHARS} char tool output).`,
+    };
+  }
+
+  const summaryWordLimit = clampNumber(
+    Math.round(window * SUMMARY_WINDOW_SHARE[input.mode] * WORDS_PER_TOKEN),
+    fixedWords,
+    SUMMARY_WORD_LIMIT_CAP,
+  );
+  const before = Math.max(0, input.contextTokensBefore ?? 0);
+  const usage = before / window;
+  // Smaller windows leave less room for the summarizer's own input, so tool
+  // output is compressed harder there, and harder again after an overflow.
+  let toolReturnTruncationChars = clampNumber(
+    Math.round(window / 100),
+    800,
+    LOCAL_SUMMARY_TOOL_RETURN_TRUNCATION_CHARS,
+  );
+  if (usage >= 1) {
+    toolReturnTruncationChars = Math.max(
+      MIN_ADAPTIVE_TOOL_RETURN_CHARS,
+      Math.round(toolReturnTruncationChars / 2),
+    );
+  }
+  const factsBlockMaxChars = Math.max(
+    DEFAULT_FACTS_BLOCK_MAX_CHARS,
+    Math.round(summaryWordLimit * CHARS_PER_WORD * FACTS_BLOCK_SUMMARY_SHARE),
+  );
+  const usageText =
+    before > 0
+      ? `~${formatTokenCount(before)} of ${formatTokenCount(window)} tokens in use (${Math.round(usage * 100)}%)`
+      : `${formatTokenCount(window)} token window`;
+  return {
+    adaptive: true,
+    summaryWordLimit,
+    toolReturnTruncationChars,
+    factsBlockMaxChars,
+    reason: `${usageText}: ${summaryWordLimit} word summary, tool output compressed to ${toolReturnTruncationChars} chars.`,
+  };
+}
+
+/** Stats fields that record what the budget decided and what was kept. */
+export function localCompactionBudgetStats(
+  budget: LocalCompactionBudget,
+  summary: string,
+): Pick<
+  LocalCompactionStats,
+  | "summary_word_limit"
+  | "tool_return_truncation_chars"
+  | "facts_preserved"
+  | "budget_reason"
+> {
+  return {
+    summary_word_limit: budget.summaryWordLimit,
+    tool_return_truncation_chars: budget.toolReturnTruncationChars,
+    facts_preserved: countCompactionFacts(parseCompactionFactsBlock(summary)),
+    budget_reason: budget.reason,
+  };
 }
 
 export type LocalCompleteFunction = (
@@ -126,6 +254,12 @@ export interface LocalAllCompactionInput {
   abortSignal?: AbortSignal;
   localProviderAuthStorageDir?: string;
   modelsRuntime?: LocalPiModelsRuntime;
+  /**
+   * Adaptive budget from computeLocalCompactionBudget. When set, the summary
+   * word limit and tool output compression follow it and a "Preserved facts"
+   * block is appended to the summary. A custom prompt is still sent untouched.
+   */
+  budget?: LocalCompactionBudget;
 }
 
 export interface LocalSlidingWindowCompactionPlan {
@@ -152,6 +286,22 @@ function stringifyUnknown(value: unknown): string {
 function truncateToolReturn(content: string, limit?: number): string {
   if (limit === undefined || content.length <= limit) return content;
   return `${content.slice(0, limit)}... [truncated ${content.length - limit} chars]`;
+}
+
+/**
+ * Content aware compression for adaptive compaction. Ordinary tool output
+ * keeps its head and tail. Failing tool output gets a larger allowance
+ * weighted to the tail, where stack traces and exit codes end.
+ */
+function compressToolReturn(
+  content: string,
+  limit: number | undefined,
+  isError: boolean,
+): string {
+  if (limit === undefined) return content;
+  return isError
+    ? middleTruncateText(content, Math.round(limit * 1.5), 0.25, 0.75)
+    : middleTruncateText(content, limit, 0.5, 0.5);
 }
 
 function middleTruncateText(
@@ -252,7 +402,7 @@ function toolReturnToText(
 
 function localMessagesToSummaryOpenAIDicts(
   messages: LocalMessage[],
-  options: { toolReturnTruncationChars?: number } = {},
+  options: { toolReturnTruncationChars?: number; tiered?: boolean } = {},
 ): SummaryOpenAIMessage[] {
   const result: SummaryOpenAIMessage[] = [];
   for (const message of messages) {
@@ -291,7 +441,13 @@ function localMessagesToSummaryOpenAIDicts(
       result.push({
         role: "tool",
         content: returnText
-          ? truncateToolReturn(returnText, options.toolReturnTruncationChars)
+          ? options.tiered
+            ? compressToolReturn(
+                returnText,
+                options.toolReturnTruncationChars,
+                message.isError,
+              )
+            : truncateToolReturn(returnText, options.toolReturnTruncationChars)
           : null,
       });
       continue;
@@ -341,12 +497,18 @@ function simpleFormatter(messages: SummaryOpenAIMessage[]): string {
 
 export function formatLocalMessagesForSummary(
   messages: LocalMessage[],
-  options: { truncationChars?: number; maxChars?: number } = {},
+  options: {
+    truncationChars?: number;
+    maxChars?: number;
+    /** Keep head and tail of tool output and favor the tail of errors. */
+    tiered?: boolean;
+  } = {},
 ): string {
   const transcript = simpleFormatter(
     localMessagesToSummaryOpenAIDicts(messages, {
       toolReturnTruncationChars:
         options.truncationChars ?? LOCAL_SUMMARY_TOOL_RETURN_TRUNCATION_CHARS,
+      tiered: options.tiered,
     }),
   );
   return options.maxChars
@@ -505,9 +667,17 @@ async function summarizeLocalMessagesWithPrompt(
   defaultPrompt: string,
 ): Promise<string> {
   if (input.messages.length === 0) return "No prior conversation messages.";
-  const primaryTranscript = formatLocalMessagesForSummary(input.messages, {
-    truncationChars: LOCAL_SUMMARY_TOOL_RETURN_TRUNCATION_CHARS,
-  });
+  const budget = input.budget;
+  const transcriptOptions = {
+    truncationChars:
+      budget?.toolReturnTruncationChars ??
+      LOCAL_SUMMARY_TOOL_RETURN_TRUNCATION_CHARS,
+    tiered: budget?.adaptive === true,
+  };
+  const primaryTranscript = formatLocalMessagesForSummary(
+    input.messages,
+    transcriptOptions,
+  );
   let result: { text: string } | undefined;
   try {
     result = await runGenerateText(input, primaryTranscript, defaultPrompt);
@@ -517,7 +687,7 @@ async function summarizeLocalMessagesWithPrompt(
     let previousTranscript: string | undefined;
     for (const maxChars of TRANSCRIPT_FALLBACK_MAX_CHAR_STEPS) {
       const fallbackTranscript = formatLocalMessagesForSummary(input.messages, {
-        truncationChars: LOCAL_SUMMARY_TOOL_RETURN_TRUNCATION_CHARS,
+        ...transcriptOptions,
         maxChars,
       });
       if (fallbackTranscript === previousTranscript) continue;
@@ -545,13 +715,24 @@ async function summarizeLocalMessagesWithPrompt(
   if (clipChars !== null && summary.length > clipChars) {
     summary = `${summary.slice(0, clipChars)}${SUMMARY_TRUNCATION_SUFFIX}`;
   }
+  // Facts go in after clipping so exact identifiers always survive.
+  if (budget) {
+    summary = appendCompactionFacts(
+      summary,
+      extractCompactionFacts(input.messages),
+      budget.factsBlockMaxChars,
+    );
+  }
   return summary;
 }
 
 export async function summarizeLocalMessagesAll(
   input: LocalAllCompactionInput,
 ): Promise<string> {
-  return summarizeLocalMessagesWithPrompt(input, LOCAL_ALL_COMPACTION_PROMPT);
+  return summarizeLocalMessagesWithPrompt(
+    input,
+    buildLocalAllCompactionPrompt(input.budget?.summaryWordLimit),
+  );
 }
 
 function hasPendingLocalToolCall(message: LocalMessage): boolean {
@@ -671,7 +852,7 @@ export async function summarizeLocalMessagesSlidingWindow(
 ): Promise<string> {
   return summarizeLocalMessagesWithPrompt(
     input,
-    LOCAL_SLIDING_WINDOW_COMPACTION_PROMPT,
+    buildLocalSlidingWindowCompactionPrompt(input.budget?.summaryWordLimit),
   );
 }
 

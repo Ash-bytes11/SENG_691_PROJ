@@ -31,6 +31,7 @@ import type {
 } from "@/backend/dev/provider-turn-executor";
 import { isRecord } from "@/utils/type-guards";
 import {
+  computeLocalCompactionBudget,
   estimateLocalMessageTokens,
   isLocalSlidingWindowCompactionPlanningError,
   LOCAL_DEFAULT_COMPACTION_MODE,
@@ -38,6 +39,7 @@ import {
   type LocalCompactionMode,
   type LocalCompactionStats,
   type LocalCompleteFunction,
+  localCompactionBudgetStats,
   packageLocalSummaryMessage,
   planLocalAllCompaction,
   planLocalSlidingWindowCompaction,
@@ -801,6 +803,12 @@ export class LocalBackend extends HeadlessBackend {
   }> {
     const messages = this.store.listLocalMessages(conversationId, agentId);
     const contextTokensBefore = estimateLocalMessageTokens(messages);
+    const contextWindow = this.effectiveContextWindow(conversationId, agentId);
+    const budget = computeLocalCompactionBudget({
+      contextWindow,
+      contextTokensBefore,
+      mode: "all",
+    });
     const plan = planLocalAllCompaction(messages);
     const summary = await summarizeLocalMessagesAll({
       conversationId,
@@ -811,6 +819,7 @@ export class LocalBackend extends HeadlessBackend {
       clipChars: settings.clipChars,
       localProviderAuthStorageDir: this.storageDir,
       modelsRuntime: this.piModelsRuntime,
+      budget,
     });
     const stats: LocalCompactionStats = {
       trigger,
@@ -818,9 +827,10 @@ export class LocalBackend extends HeadlessBackend {
       context_tokens_after:
         Math.ceil(summary.length / 4) +
         estimateLocalMessageTokens(plan.messagesToKeep),
-      context_window: this.effectiveContextWindow(conversationId, agentId),
+      context_window: contextWindow,
       messages_count_before: messages.length,
       messages_count_after: 1 + plan.messagesToKeep.length,
+      ...localCompactionBudgetStats(budget, summary),
     };
     const storeResult = this.store.compactConversationAll({
       conversationId,
@@ -852,6 +862,12 @@ export class LocalBackend extends HeadlessBackend {
   }> {
     const messages = this.store.listLocalMessages(conversationId, agentId);
     const contextWindow = this.effectiveContextWindow(conversationId, agentId);
+    const contextTokensBefore = estimateLocalMessageTokens(messages);
+    const budget = computeLocalCompactionBudget({
+      contextWindow,
+      contextTokensBefore,
+      mode: "sliding_window",
+    });
     const plan = planLocalSlidingWindowCompaction(messages, {
       slidingWindowPercentage: settings.slidingWindowPercentage,
       contextWindow,
@@ -865,17 +881,19 @@ export class LocalBackend extends HeadlessBackend {
       clipChars: settings.clipChars,
       localProviderAuthStorageDir: this.storageDir,
       modelsRuntime: this.piModelsRuntime,
+      budget,
     });
     const contextTokensAfter =
       Math.ceil(summary.length / 4) +
       estimateLocalMessageTokens(plan.messagesToKeep);
     const stats: LocalCompactionStats = {
       trigger,
-      context_tokens_before: estimateLocalMessageTokens(messages),
+      context_tokens_before: contextTokensBefore,
       context_tokens_after: contextTokensAfter,
       context_window: contextWindow,
       messages_count_before: messages.length,
       messages_count_after: 1 + plan.messagesToKeep.length,
+      ...localCompactionBudgetStats(budget, summary),
     };
     const storeResult = this.store.compactConversationAll({
       conversationId,

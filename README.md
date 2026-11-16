@@ -43,6 +43,14 @@ Install the package via [npm](https://docs.npmjs.com/downloading-and-installing-
 npm install -g @letta-ai/letta-code
 ```
 
+
+<!-- Added by Iris: Setup, Authentication, and Cloud Limits documentation -->
+For additional information about authentication, API keys, and Letta Cloud storage limits, see the [Setup, Authentication, and Cloud Limits Guide](docs/setup-authentication-cloud-limits.md).
+
+
+
+
+
 Navigate to your project directory and run `letta` (see command-line options [in the docs](https://docs.letta.com/letta-code/commands)). You can also run the tutorial agent with: 
 ```
 letta --new-agent --personality tutorial

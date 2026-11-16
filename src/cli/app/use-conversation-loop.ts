@@ -73,6 +73,7 @@ import {
   buildLocalNoModelResponse,
   splitSyntheticAssistantResponse,
 } from "@/cli/helpers/local-no-model-response";
+import { showPermissionExplanations } from "@/cli/helpers/permission-explanation-display";
 import type { ExecutionPhase } from "@/cli/helpers/phase-visuals";
 import { getQueuedNotificationSummaries } from "@/cli/helpers/queued-message-parts";
 import { appendTranscriptDeltaJsonl } from "@/cli/helpers/reflection-transcript";
@@ -1814,10 +1815,6 @@ export function useConversationLoop(ctx: ConversationLoopContext) {
               return;
             }
 
-            // Check permissions for all approvals (including fancy UI tools)
-            // Ensure the singleton permission mode matches what the UI shows.
-            // This prevents rare races where the footer shows YOLO but approvals still
-            // get classified using the default mode.
             const desiredMode = uiPermissionModeRef.current;
             if (permissionMode.getMode() !== desiredMode) {
               permissionMode.setMode(desiredMode);
@@ -1831,9 +1828,12 @@ export function useConversationLoop(ctx: ConversationLoopContext) {
                   "Tool call incomplete - missing name or arguments",
                 toolContextId: approvalToolContextIdRef.current,
               });
-
-            // Precompute diffs for file edit tools before execution (both auto-allowed and needs-user-input)
-            // This is needed for inline approval UI to show diffs, and for post-approval rendering
+            showPermissionExplanations(buffersRef.current, [
+              ...autoAllowed,
+              ...needsUserInput,
+              ...autoDenied,
+            ]);
+            refreshDerived();
             for (const ac of [...autoAllowed, ...needsUserInput]) {
               const toolName = ac.approval.toolName;
               const toolCallId = ac.approval.toolCallId;

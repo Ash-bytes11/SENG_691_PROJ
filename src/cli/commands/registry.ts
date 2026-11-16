@@ -6,6 +6,7 @@ import {
   requestCloudReflectionRun,
 } from "@/agent/reflection-runs";
 import { renderWorkflowTree } from "@/cli/helpers/workflow-display";
+import { formatLastPermissionDecision } from "@/permissions/explanation";
 import { listWorkflowExecutions } from "@/tools/workflow/execution-registry";
 import { handleMemoryRepositoryCommand } from "./memory-repository";
 import { handleSecretCommand } from "./secret";
@@ -135,6 +136,12 @@ export const commands: Record<string, Command> = {
       // Handled specially in App.tsx to open memory viewer
       return "Opening memory viewer...";
     },
+  },
+  "/permission-explain": {
+    desc: "Explain the most recent tool permission decision",
+    order: 15.1,
+    noArgs: true,
+    handler: () => formatLastPermissionDecision(),
   },
   "/palace": {
     desc: "Open the Memory Palace in your browser",
